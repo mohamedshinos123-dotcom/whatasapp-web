@@ -13,7 +13,7 @@ const retries = new Map();
 
 const sessionsDir = (sessionId = '') => {
   return join(dirname, "sessions", sessionId ? sessionId : '');
-};
+}; 
 
 const isSessionExists = sessionId => sessions.has(sessionId);
 
