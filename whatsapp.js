@@ -88,39 +88,39 @@ const createSession = async (sessionId, isLegacy = false, res = null) => {
 
   
   socket.ev.on("connection.update", async update => {
-  //   const { connection, lastDisconnect } = update;
-  //   const statusCode = lastDisconnect?.error?.output?.statusCode;
+    const { connection, lastDisconnect } = update;
+    const statusCode = lastDisconnect?.error?.output?.statusCode;
 
-  //   if (connection === 'open') {
-  //     retries.delete(sessionId);
-  //   }
+    if (connection === 'open') {
+      retries.delete(sessionId);
+    }
 
-  //   if (connection === "close") {
-  //     if (statusCode === DisconnectReason.loggedOut || !shouldReconnect(sessionId)) {
-  //       if (res && !res.headersSent) {
-  //         sendResponse(res, 500, false, "Unable to create session.");
-  //       }
-  //       // return deleteSession(sessionId, isLegacy);
-  //     }
-  //     setTimeout(() => {
-  //       createSession(sessionId, isLegacy, res);
-  //     }, statusCode === DisconnectReason.restartRequired ? 0 : parseInt(process.env.RECONNECT_INTERVAL ?? 0));
-  //   }
+    if (connection === "close") {
+      if (statusCode === DisconnectReason.loggedOut || !shouldReconnect(sessionId)) {
+        if (res && !res.headersSent) {
+          sendResponse(res, 500, false, "Unable to create session.");
+        }
+        // return deleteSession(sessionId, isLegacy);
+      }
+      setTimeout(() => {
+        createSession(sessionId, isLegacy, res);
+      }, statusCode === DisconnectReason.restartRequired ? 0 : parseInt(process.env.RECONNECT_INTERVAL ?? 0));
+    }
 
-  //   if (update.qr) {
-  //     if (res && !res.headersSent) {
-  //       try {
-  //         const qrCode = await toDataURL(update.qr);
-  //         sendResponse(res, 200, true, "QR code received, please scan the QR code.", { qr: qrCode });
-  //         return;
-  //       } catch {
-  //         sendResponse(res, 500, false, "Unable to create QR code.");
-  //       }
-  //     }
-  //     try {
-  //       await socket.logout();
-  //     } catch { }
-  //   }
+    if (update.qr) {
+      if (res && !res.headersSent) {
+        try {
+          const qrCode = await toDataURL(update.qr);
+          sendResponse(res, 200, true, "QR code received, please scan the QR code.", { qr: qrCode });
+          return;
+        } catch {
+          sendResponse(res, 500, false, "Unable to create QR code.");
+        }
+      }
+      try {
+        // await socket.logout();
+      } catch { }
+    }
   });
 };
 
