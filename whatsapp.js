@@ -1,8 +1,9 @@
+
 import { rmSync, readdir } from 'fs';
 import fs from 'fs';
 import { join } from 'path';
 import pino from 'pino';
-import WhatsAppSocket, { useMultiFileAuthState, makeInMemoryStore, Browsers, DisconnectReason, delay, downloadMediaMessage } from '@adiwajshing/baileys';
+import WhatsAppSocket, { useMultiFileAuthState, makeInMemoryStore, Browsers, DisconnectReason, delay, downloadMediaMessage, fetchLatestBaileysVersion  } from '@adiwajshing/baileys';
 import { toDataURL } from 'qrcode';
 import dirname from './dirname.js';
 import sendResponse from './response.js';
@@ -13,7 +14,7 @@ const retries = new Map();
 
 const sessionsDir = (sessionId = '') => {
   return join(dirname, "sessions", sessionId ? sessionId : '');
-}; 
+};
 
 const isSessionExists = sessionId => sessions.has(sessionId);
 
@@ -40,12 +41,13 @@ const createSession = async (sessionId, isLegacy = false, res = null) => {
     ({ state: authState, saveCreds: saveCredentials } = await useMultiFileAuthState(sessionsDir(sessionFileName)));
   }
 
+  const { version } = await fetchLatestBaileysVersion();
   const socketConfig = {
     auth: authState,
-    version: [2, 913, 4],
+    version,
     printQRInTerminal: false,
     logger,
-    browser: Browsers.macOS('Desktop'),
+    browser: ["Chrome", "Windows", "10.0"],
     patchMessageBeforeSending: message => {
       const hasButtonsOrList = !!(message.buttonsMessage || message.listMessage);
       if (hasButtonsOrList) {
@@ -69,24 +71,22 @@ const createSession = async (sessionId, isLegacy = false, res = null) => {
   sessions.set(sessionId, { ...socket, store, isLegacy });
   socket.ev.on('creds.update', saveCredentials);
 
-  socket.ev.on('messages.upsert', async message => {
-    const msg = message.messages[0x0];
-    const msgs = [];
-    let split = msg.key.remoteJid.split('@');
-    let remoteId = split[0x1] ?? null;
-    if (remoteId == 's.whatsapp.net') {
-      msg.fromMe = msg.key.fromMe;
-      msgs.remote_id = msg.key.remoteJid;
-      msgs.sessionId = sessionId;
-      msgs.message_id = msg.key.id;
-      msgs.message = msg.message;
-      msgs.extra = message;
-      sentWebHook(sessionId, msgs, socket, message, msg.key.fromMe);
-    }
-  })
+//   socket.ev.on('messages.upsert', async message => {
+//     const msg = message.messages[0x0];
+//     const msgs = [];
+//     let split = msg.key.remoteJid.split('@');
+//     let remoteId = split[0x1] ?? null;
+//     if (remoteId == 's.whatsapp.net') {
+//       msg.fromMe = msg.key.fromMe;
+//       msgs.remote_id = msg.key.remoteJid;
+//       msgs.sessionId = sessionId;
+//       msgs.message_id = msg.key.id;
+//       msgs.message = msg.message;
+//       msgs.extra = message;
+//       sentWebHook(sessionId, msgs, socket, message, msg.key.fromMe);
+//     }
+//   })
 
-
-  
   socket.ev.on("connection.update", async update => {
     const { connection, lastDisconnect } = update;
     const statusCode = lastDisconnect?.error?.output?.statusCode;
@@ -139,7 +139,7 @@ const sentWebHook = async (sessionId, messageData, socket, messageUpdate, fromMe
   try {
     const message = messageUpdate.messages[0];
     const messageType = Object.keys(messageData.message)[0];
-    await axios.post(webhookUrl, {
+    axios.post(webhookUrl, {
       from_me: fromMe,
       from: messageData.remote_id,
       message_id: messageData.message_id,
@@ -160,7 +160,7 @@ const deleteSession = (sessionId, isLegacy = false) => {
   rmSync(sessionsDir(storeFileName), deleteOptions);
   sessions.delete(sessionId);
   retries.delete(sessionId);
-  setDeviceStatus(sessionId, 0);
+//   setDeviceStatus(sessionId, 0);
 };
 
 // const getChatList = (sessionId, isGroup = false) => {
@@ -267,3 +267,4 @@ const init = () => {
 };
 
 export { isSessionExists, createSession, getSession, deleteSession, getChatList, isExists, sendMessage, formatPhone, formatGroup, cleanup, init };
+
